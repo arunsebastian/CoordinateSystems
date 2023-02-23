@@ -95,8 +95,8 @@ class BuildingDistanceErrorTool(object):
             self.setWorkspace()
             self.validateInputDataSet()
             self.createResultFeatureClass()
-            nearTable = self.generateValidNearTable()
-            self.generateResultErrorFeatures(nearTable)
+            self.processInputDataForPolygonProximity()
+            
             #self.deleteTemporaryWorkspace()
         except Exception as error :
             self.log(error,'error')
@@ -112,9 +112,8 @@ class BuildingDistanceErrorTool(object):
     #--------------------------------------------------------------------------------------------------------#
 
     def validateInputDataSet(self):
-        inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
-        inputFC = inputFileParam.valueAsText
-        if inputFC and inputFC.strip():
+        inputFC = self.getInputFeatureClass()
+        if inputFC:
             dsc = arcpy.da.Describe(inputFC).get('spatialReference')
             if  'meter' not in dsc.linearUnitName.lower():
                 raise Exception("Invalid linear unit for coordinate system")
@@ -130,13 +129,18 @@ class BuildingDistanceErrorTool(object):
             arcpy.management.AddField(errorPointFC, "distance", "TEXT")
         if not arcpy.Exists(errorLineFC):
             arcpy.management.CreateFeatureclass(self.workspace, self.config.get('errorLineFC'), 'POLYLINE',spatial_reference = self.getInputSpatialReference())
+    
+    def processInputDataForPolygonProximity(self):
+        nearTable = self.generateValidNearTable(self.getInputFeatureClass())
+        self.generateResultErrorFeatures(nearTable)
+    
+    def processInputDataForVertexProximity(self):
+        return 1
 
-    def generateValidNearTable(self):
-        inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
-        inputFC = inputFileParam.valueAsText.strip()
+    def generateValidNearTable(self,inputFC):
         distanceThreshold = next((param for param in self.params if param.name == 'distance_threshold'), None)
         outFC = os.path.join(self.workspace,'neartable')
-        nearTable = arcpy.analysis.GenerateNearTable(inputFC,inputFC,outFC,int(distanceThreshold.valueAsText),location='LOCATION',)
+        nearTable = arcpy.analysis.GenerateNearTable(inputFC,inputFC,outFC,int(distanceThreshold.valueAsText),location='LOCATION')
 
         #removing the records with near distance = 0 - helps in inspecting the near table for debugging
         with arcpy.da.UpdateCursor(nearTable,'*',where_clause=f'{NEAR_DISTANCE} = 0') as uCur:
@@ -157,10 +161,16 @@ class BuildingDistanceErrorTool(object):
                     iCursor.insertRow(('ADJACENT_BUILDING_DISTANCE',str(distance),midpoint))
         
     def getInputSpatialReference(self):
-        inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
-        inputFC = inputFileParam.valueAsText.strip()
+        inputFC = self.getInputFeatureClass()
         dsc = arcpy.da.Describe(inputFC).get('spatialReference')
         return arcpy.SpatialReference(text=dsc.exportToString())
+
+    def getInputFeatureClass(self):
+        inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
+        inputFC = inputFileParam.valueAsText
+        if inputFC and len(inputFC.strip()) > 0:
+            return inputFC
+        return None
     
 
     #--------------------------------------------------------------------------------------------------------#
@@ -195,7 +205,7 @@ class BuildingDistanceErrorTool(object):
         config = {var:vars(module)[var] for var in dir(module) if not var.startswith('_')}
         return config.get('CONFIG')
 
-    def tableToPandasFrame(self,in_table, input_fields=None, where_clause=None):
+    def fet(self,in_table, input_fields=None, where_clause=None):
         """Function will convert an arcgis table into a pandas dataframe with an object ID index, and the selected
         input fields using an arcpy.da.SearchCursor."""
         OIDFieldName = arcpy.Describe(in_table).OIDFieldName
