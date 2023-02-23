@@ -15,7 +15,7 @@ NEAR_DISTANCE ='NEAR_DIST'
 FROM_X = 'FROM_X'
 FROM_Y = 'FROM_Y'
 NEAR_X = 'NEAR_X'
-NEAR_Y = 'NEAR_X'
+NEAR_Y = 'NEAR_Y'
 
 class Toolbox(object):
     def __init__(self):
@@ -95,8 +95,8 @@ class BuildingDistanceErrorTool(object):
             self.setWorkspace()
             self.validateInputDataSet()
             self.createResultFeatureClass()
-            tableDF = self.generateValidNearTable()
-            self.generateMidPointsOfNearBuildings(tableDF)
+            nearTable = self.generateValidNearTable()
+            self.generateResultErrorFeatures(nearTable)
             #self.deleteTemporaryWorkspace()
         except Exception as error :
             self.log(error,'error')
@@ -135,40 +135,26 @@ class BuildingDistanceErrorTool(object):
         inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
         inputFC = inputFileParam.valueAsText.strip()
         distanceThreshold = next((param for param in self.params if param.name == 'distance_threshold'), None)
-        outFC = os.path.join('memory','neartable')
-        nearTable = arcpy.analysis.GenerateNearTable(inputFC,inputFC,outFC,int(distanceThreshold.valueAsText),location='LOCATION')
+        outFC = os.path.join(self.workspace,'neartable')
+        nearTable = arcpy.analysis.GenerateNearTable(inputFC,inputFC,outFC,int(distanceThreshold.valueAsText),location='LOCATION',)
 
         #removing the records with near distance = 0 - helps in inspecting the near table for debugging
         with arcpy.da.UpdateCursor(nearTable,'*',where_clause=f'{NEAR_DISTANCE} = 0') as uCur:
             for dRow in uCur:
                 uCur.deleteRow()
-
-        df = self.tableToPandasFrame(nearTable,None,f'{NEAR_DISTANCE} > 0').reset_index()
-        return df
+        return nearTable
     
-    def generateMidPointsOfNearBuildings(self,df):
-        records = df.to_dict('records')
+    def generateResultErrorFeatures(self,table):
         fieldNames =['error_type','distance','Shape@']
         errorPointFC = os.path.join(self.workspace,self.config.get('errorPointFC'))
         errorLineFC = os.path.join(self.workspace,self.config.get('errorLineFC'))
         spatialRef = self.getInputSpatialReference()
-        for index,record in enumerate(records):
-            fromPt = arcpy.Point(record.get(FROM_X), record.get(FROM_Y))
-            toPt = arcpy.Point(record.get(NEAR_X), record.get(NEAR_Y))
-            
-            fromPtGeom =  arcpy.PointGeometry(fromPt,spatialRef)
-            toPtGeom =  arcpy.PointGeometry(toPt,spatialRef)
-
-            ptArray = arcpy.Array()
-            ptArray.add(fromPt)
-            ptArray.add(toPt)
-            errorLine = arcpy.Polyline(ptArray,spatialRef)
-
-            with arcpy.da.InsertCursor(errorLineFC, ['Shape@']) as iCursor:
-                iCursor.insertRow((errorLine,))
-           
-            with arcpy.da.InsertCursor(errorPointFC, fieldNames) as iCursor:
-                iCursor.insertRow(('ADJACENT_BUILDING_DISTANCE',str(record.get(NEAR_DISTANCE)),fromPtGeom))
+        arcpy.management.XYToLine(table, errorLineFC, FROM_X, FROM_Y, NEAR_X, NEAR_Y, 'PLANAR', spatial_reference=spatialRef,attributes=True)
+        with arcpy.da.InsertCursor(errorPointFC, fieldNames) as iCursor:
+            with arcpy.da.SearchCursor(errorLineFC,[NEAR_DISTANCE,'Shape@'] ) as sCursor:
+                for distance,line in sCursor:
+                    midpoint = line.positionAlongLine(0.50,True).firstPoint
+                    iCursor.insertRow(('ADJACENT_BUILDING_DISTANCE',str(distance),midpoint))
         
     def getInputSpatialReference(self):
         inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
