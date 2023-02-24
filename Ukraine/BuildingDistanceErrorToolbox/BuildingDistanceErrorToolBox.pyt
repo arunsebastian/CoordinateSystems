@@ -36,9 +36,9 @@ class BuildingDistanceErrorTool(object):
         self.canRunInBackground = False
 
         self.config = self.importConfig()
+        self.workspace = None
+        self.scratchWorkspace = None
         
-       
-
         # storing reference to the params
         self.params = arcpy.GetParameterInfo()
         arcpy.env.overwriteOutput = True
@@ -48,7 +48,7 @@ class BuildingDistanceErrorTool(object):
         params = []
         building_shp = arcpy.Parameter(           
             name="building_shp",
-            displayName='Select GPS Files',
+            displayName='Select SHP File',
             datatype="DEShapefile",
             parameterType="Required",
             direction="Input"
@@ -95,7 +95,8 @@ class BuildingDistanceErrorTool(object):
             self.setWorkspace()
             self.validateInputDataSet()
             self.createResultFeatureClass()
-            self.processInputDataForPolygonProximity()
+            self.processInputDataForBoundaryProximity()
+            #self.processInputDataForVertexProximity()
             
             #self.deleteTemporaryWorkspace()
         except Exception as error :
@@ -130,20 +131,32 @@ class BuildingDistanceErrorTool(object):
         if not arcpy.Exists(errorLineFC):
             arcpy.management.CreateFeatureclass(self.workspace, self.config.get('errorLineFC'), 'POLYLINE',spatial_reference = self.getInputSpatialReference())
     
-    def processInputDataForPolygonProximity(self):
+    def processInputDataForBoundaryProximity(self):
         nearTable = self.generateValidNearTable(self.getInputFeatureClass())
         self.generateResultErrorFeatures(nearTable)
     
     def processInputDataForVertexProximity(self):
-        return 1
+        inputFC = self.getInputFeatureClass()
+        with arcpy.da.SearchCursor(inputFC,['Shape@'] ) as sCursor:
+            for shape, in sCursor:
+                part = shape.getPart()
+                for vertx in range(shape.pointCount):
+                    pnt=part.getObject(0).getObject(vertx)
+                    self.log(pnt.JSON)
+            
+    
+       
+            
+                
+        
 
     def generateValidNearTable(self,inputFC):
         distanceThreshold = next((param for param in self.params if param.name == 'distance_threshold'), None)
-        outFC = os.path.join(self.workspace,'neartable')
+        outFC = os.path.join('memory','neartable')
         nearTable = arcpy.analysis.GenerateNearTable(inputFC,inputFC,outFC,int(distanceThreshold.valueAsText),location='LOCATION')
 
         #removing the records with near distance = 0 - helps in inspecting the near table for debugging
-        with arcpy.da.UpdateCursor(nearTable,'*',where_clause=f'{NEAR_DISTANCE} = 0') as uCur:
+        with arcpy.da.UpdateCursor(nearTable,'*',where_clause='{} = 0'.format(NEAR_DISTANCE)) as uCur:
             for dRow in uCur:
                 uCur.deleteRow()
         return nearTable
@@ -155,10 +168,11 @@ class BuildingDistanceErrorTool(object):
         spatialRef = self.getInputSpatialReference()
         arcpy.management.XYToLine(table, errorLineFC, FROM_X, FROM_Y, NEAR_X, NEAR_Y, 'PLANAR', spatial_reference=spatialRef,attributes=True)
         with arcpy.da.InsertCursor(errorPointFC, fieldNames) as iCursor:
-            with arcpy.da.SearchCursor(errorLineFC,[NEAR_DISTANCE,'Shape@'] ) as sCursor:
-                for distance,line in sCursor:
-                    midpoint = line.positionAlongLine(0.50,True).firstPoint
-                    iCursor.insertRow(('ADJACENT_BUILDING_DISTANCE',str(distance),midpoint))
+            with arcpy.da.SearchCursor(errorLineFC,[NEAR_DISTANCE,'SHAPE@XY'] ) as sCursor:
+                for distance,xy in sCursor:
+                    midpoint = arcpy.Point(xy[0],xy[1])
+                    midPointGeom = arcpy.PointGeometry(midpoint,spatialRef)
+                    iCursor.insertRow(('ADJACENT_BUILDING_DISTANCE',str(distance),midPointGeom))
         
     def getInputSpatialReference(self):
         inputFC = self.getInputFeatureClass()
@@ -185,11 +199,14 @@ class BuildingDistanceErrorTool(object):
         inputFileParam = next((param for param in self.params if param.name == 'building_shp'), None)
         resultFolderParam = next((param for param in self.params if param.name == 'result_folder'), None)
         if inputFileParam and inputFileParam.valueAsText:
+            uid = int(time.time() * 1000)
             filePath = inputFileParam.valueAsText.strip()
             fileName = ntpath.basename(filePath)
-            outGeodbName = f'{os.path.splitext(fileName)[0]}_DError_{int(time.time() * 1000)}.gdb'
+            outGdb= '{}_DError_{}.gdb'.format(os.path.splitext(fileName)[0],uid)
+            scratchGdb = 'temp_{}.gdb'.format(uid)
             if resultFolderParam and resultFolderParam.valueAsText:
-                self.workspace = str(arcpy.CreateFileGDB_management(resultFolderParam.valueAsText, outGeodbName))
+                self.workspace = str(arcpy.CreateFileGDB_management(resultFolderParam.valueAsText, outGdb))
+                self.scratchWorkspace = str(arcpy.CreateFileGDB_management(resultFolderParam.valueAsText, scratchGdb))
                 arcpy.env.workspace = self.workspace
             else:
                 self.log("Invalid input params","error")
