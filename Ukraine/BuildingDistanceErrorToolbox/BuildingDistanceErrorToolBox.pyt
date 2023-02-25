@@ -96,7 +96,7 @@ class BuildingDistanceErrorTool(object):
             self.validateInputDataSet()
             self.createResultFeatureClass()
             self.processInputDataForBoundaryProximity()
-            #self.processInputDataForVertexProximity()
+            self.processInputDataForVertexProximity()
             
             #self.deleteTemporaryWorkspace()
         except Exception as error :
@@ -123,56 +123,61 @@ class BuildingDistanceErrorTool(object):
     
     def createResultFeatureClass(self):
         errorPointFC = os.path.join(self.workspace,self.config.get('errorPointFC'))
-        errorLineFC = os.path.join(self.workspace,self.config.get('errorLineFC'))
         if not arcpy.Exists(errorPointFC):
             arcpy.management.CreateFeatureclass(self.workspace, self.config.get('errorPointFC'), 'POINT',spatial_reference = self.getInputSpatialReference())
             arcpy.management.AddField(errorPointFC, "error_type", "TEXT")
             arcpy.management.AddField(errorPointFC, "distance", "TEXT")
-        if not arcpy.Exists(errorLineFC):
-            arcpy.management.CreateFeatureclass(self.workspace, self.config.get('errorLineFC'), 'POLYLINE',spatial_reference = self.getInputSpatialReference())
+       
     
     def processInputDataForBoundaryProximity(self):
+        self.log('Checking building proximity')
+        error='ADJACENT_BUILDING_DISTANCE'
+        tic = time.perf_counter()
         nearTable = self.generateValidNearTable(self.getInputFeatureClass())
-        self.generateResultErrorFeatures(nearTable)
+        self.generateResultErrorFeatures(nearTable,error)
+        self.log("Building proximity results: {:.4f} seconds".format(time.perf_counter() - tic))
     
     def processInputDataForVertexProximity(self):
+        error='ADJACENT_VERTEX_DISTANCE'
         inputFC = self.getInputFeatureClass()
-        with arcpy.da.SearchCursor(inputFC,['Shape@'] ) as sCursor:
-            for shape, in sCursor:
-                part = shape.getPart()
-                for vertx in range(shape.pointCount):
-                    pnt=part.getObject(0).getObject(vertx)
-                    self.log(pnt.JSON)
-            
-    
-       
-            
+        outFC = os.path.join(self.scratchWorkspace,'vertices')
+        with arcpy.da.SearchCursor(inputFC,['FID','Shape@'] ) as sCursor:
+            for fid,shape in sCursor:
+                tic = time.perf_counter()
+                arcpy.management.FeatureVerticesToPoints(shape,outFC)
+                nearTable = self.generateValidNearTable(outFC)
+                self.generateResultErrorFeatures(nearTable,error)
+                self.log("FID {}: Vertex proximity results: {:.4f} seconds".format(fid,time.perf_counter() - tic))
                 
-        
 
     def generateValidNearTable(self,inputFC):
         distanceThreshold = next((param for param in self.params if param.name == 'distance_threshold'), None)
         outFC = os.path.join('memory','neartable')
         nearTable = arcpy.analysis.GenerateNearTable(inputFC,inputFC,outFC,int(distanceThreshold.valueAsText),location='LOCATION')
-
         #removing the records with near distance = 0 - helps in inspecting the near table for debugging
         with arcpy.da.UpdateCursor(nearTable,'*',where_clause='{} = 0'.format(NEAR_DISTANCE)) as uCur:
             for dRow in uCur:
                 uCur.deleteRow()
         return nearTable
     
-    def generateResultErrorFeatures(self,table):
+    def generateResultErrorFeatures(self,nearTable,error):
         fieldNames =['error_type','distance','Shape@']
         errorPointFC = os.path.join(self.workspace,self.config.get('errorPointFC'))
         errorLineFC = os.path.join(self.workspace,self.config.get('errorLineFC'))
+        errorLineTempFC = os.path.join(self.scratchWorkspace,self.config.get('errorLineFC'))
         spatialRef = self.getInputSpatialReference()
-        arcpy.management.XYToLine(table, errorLineFC, FROM_X, FROM_Y, NEAR_X, NEAR_Y, 'PLANAR', spatial_reference=spatialRef,attributes=True)
+        arcpy.management.XYToLine(nearTable, errorLineTempFC, FROM_X, FROM_Y, NEAR_X, NEAR_Y, 'PLANAR', spatial_reference=spatialRef,attributes=True)
+        arcpy.management.DeleteIdentical(errorLineTempFC, ['SHAPE'])
+        if not arcpy.Exists(errorLineFC):
+            arcpy.management.CreateFeatureclass(self.workspace, self.config.get('errorLineFC'), 'POLYLINE',template=errorLineTempFC,spatial_reference = self.getInputSpatialReference())
+        arcpy.management.Append(errorLineTempFC, errorLineFC, "TEST")    
         with arcpy.da.InsertCursor(errorPointFC, fieldNames) as iCursor:
             with arcpy.da.SearchCursor(errorLineFC,[NEAR_DISTANCE,'SHAPE@XY'] ) as sCursor:
                 for distance,xy in sCursor:
                     midpoint = arcpy.Point(xy[0],xy[1])
                     midPointGeom = arcpy.PointGeometry(midpoint,spatialRef)
-                    iCursor.insertRow(('ADJACENT_BUILDING_DISTANCE',str(distance),midPointGeom))
+                    iCursor.insertRow((error,str(distance),midPointGeom))
+        arcpy.management.DeleteIdentical(errorPointFC, ['SHAPE'])
         
     def getInputSpatialReference(self):
         inputFC = self.getInputFeatureClass()
