@@ -97,8 +97,7 @@ class BuildingDistanceErrorTool(object):
             self.createResultFeatureClass()
             self.processInputDataForBoundaryProximity()
             self.processInputDataForVertexProximity()
-            
-            #self.deleteTemporaryWorkspace()
+            self.deleteTemporaryWorkspace()
         except Exception as error :
             self.log(error,'error')
             #self.deleteTemporaryWorkspace()
@@ -227,15 +226,22 @@ class BuildingDistanceErrorTool(object):
         config = {var:vars(module)[var] for var in dir(module) if not var.startswith('_')}
         return config.get('CONFIG')
 
-    def fet(self,in_table, input_fields=None, where_clause=None):
-        """Function will convert an arcgis table into a pandas dataframe with an object ID index, and the selected
-        input fields using an arcpy.da.SearchCursor."""
-        OIDFieldName = arcpy.Describe(in_table).OIDFieldName
-        if input_fields:
-            final_fields = [OIDFieldName] + input_fields
-        else:
-            final_fields = [field.name for field in arcpy.ListFields(in_table)]
-        data = [row for row in arcpy.da.SearchCursor(in_table, final_fields, where_clause=where_clause)]
-        fc_dataframe = pd.DataFrame(data, columns=final_fields)
-        fc_dataframe = fc_dataframe.set_index(OIDFieldName, drop=True)
-        return fc_dataframe
+    def deleteTemporaryWorkspace(self):
+        if arcpy.Exists(self.scratchWorkspace):
+            arcpy.env.workspace = self.scratchWorkspace
+            fcs = self.listFeatureClassesInWorkspace()
+            for fc in fcs:
+                arcpy.Delete_management(fc)
+            arcpy.management.ClearWorkspaceCache(self.scratchWorkspace)
+            arcpy.env.scratchWorkspace = None
+            arcpy.Delete_management(self.scratchWorkspace)
+
+    def listFeatureClassesInWorkspace(self):
+        feature_classes = []
+        datasets = arcpy.ListDatasets(feature_type='feature')
+        datasets = [''] + datasets if datasets is not None else []
+        for ds in datasets:
+            for fc in arcpy.ListFeatureClasses(feature_dataset=ds):
+                feature_classes.append(fc)
+        
+        return feature_classes
