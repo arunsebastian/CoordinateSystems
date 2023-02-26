@@ -139,11 +139,24 @@ class BuildingDistanceErrorTool(object):
     def processInputDataForVertexProximity(self):
         error='ADJACENT_VERTEX_DISTANCE'
         inputFC = self.getInputFeatureClass()
-        outFC = os.path.join(self.scratchWorkspace,'vertices')
+        outFC = os.path.join('memory','vertices')
+        if not arcpy.Exists(outFC):
+            arcpy.management.CreateFeatureclass('memory', 'vertices', 'POINT',spatial_reference = self.getInputSpatialReference())
         with arcpy.da.SearchCursor(inputFC,['FID','Shape@'] ) as sCursor:
             for fid,shape in sCursor:
+                points=[]
                 tic = time.perf_counter()
-                arcpy.management.FeatureVerticesToPoints(shape,outFC)
+                #arcpy.management.TruncateTable(outFC)
+                arcpy.DeleteRows_management(outFC)
+                part = shape.getPart()
+                insCursor =  arcpy.da.InsertCursor(outFC, ['SHAPE@']) 
+                for vertx in range(shape.pointCount):
+                    pnt=part.getObject(0).getObject(vertx)
+                    if pnt:
+                        points.append(arcpy.PointGeometry(arcpy.Point(pnt.X,pnt.Y),self.getInputSpatialReference()))
+                for point in points:
+                    insCursor.insertRow(point)
+                del insCursor
                 nearTable = self.generateValidNearTable(outFC)
                 self.generateResultErrorFeatures(nearTable,error)
                 self.log("FID {}: Vertex proximity results: {:.4f} seconds".format(fid,time.perf_counter() - tic))
